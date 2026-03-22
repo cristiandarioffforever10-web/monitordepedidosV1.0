@@ -1,22 +1,22 @@
 import { auth, db, getDeliveryApp } from '../config/firebase.config.js';
-import { 
+import {
     getAuth,
-    signInAnonymously, 
-    onAuthStateChanged, 
-    signOut, 
-    GoogleAuthProvider, 
+    signInAnonymously,
+    onAuthStateChanged,
+    signOut,
+    GoogleAuthProvider,
     signInWithPopup,
     signInWithRedirect,
     getRedirectResult
 } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-import { 
+import {
     getFirestore,
-    doc, 
-    getDoc, 
-    collection, 
-    query, 
-    where, 
-    getDocs 
+    doc,
+    getDoc,
+    collection,
+    query,
+    where,
+    getDocs
 } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
 const googleProvider = new GoogleAuthProvider();
@@ -71,28 +71,42 @@ export const authService = {
 
     async loginWithPIN(pin, useDelivery = false) {
         if (!pin) throw new Error("PIN requerido");
-        
+
+        // Limpiamos el PIN de espacios accidentales (común en teclados móviles)
+        const cleanPIN = pin.toString().trim();
+
         const targetAuth = this.getAuthInstance(useDelivery);
         const targetDb = this.getDbInstance(useDelivery);
 
         try {
-            // 1. Autenticación anónima para cumplir con las reglas de Firebase
-            await signInAnonymously(targetAuth);
+            // 1. Autenticación anónima
+            const userCredential = await signInAnonymously(targetAuth);
+            console.log(`[AUTH] Sesión anónima activa (UID: ${userCredential.user.uid}) en ${useDelivery ? 'instancia aislada' : 'instancia default'}`);
 
-            // 2. BUSQUEDA: Buscar el documento donde el campo 'pin' sea igual al ingresado
+            // 2. BUSQUEDA
             const staffRef = collection(targetDb, 'staff_access');
-            const q = query(staffRef, where("pin", "==", pin));
-            const querySnapshot = await getDocs(q);
+            
+            // Intento 1: String
+            let q = query(staffRef, where("pin", "==", cleanPIN));
+            let querySnapshot = await getDocs(q);
+
+            // Intento 2: Como Number (si el primero falló y el PIN es numérico)
+            if (querySnapshot.empty && !isNaN(cleanPIN)) {
+                q = query(staffRef, where("pin", "==", Number(cleanPIN)));
+                querySnapshot = await getDocs(q);
+            }
 
             if (!querySnapshot.empty) {
                 const docSnap = querySnapshot.docs[0];
                 const staffData = docSnap.data();
-                return { 
-                    ...staffData, 
+                const result = {
+                    ...staffData,
                     id: docSnap.id,
                     role: staffData.role || 'operativo',
-                    name: (staffData.name || '').trim() || docSnap.id
+                    name: (staffData.name || staffData.id || docSnap.id).trim()
                 };
+                console.log(`PIN Login exitoso: ${result.name} (${result.role})`);
+                return result;
             } else {
                 // Si el PIN no es válido, cerramos la sesión anónima
                 await signOut(targetAuth);

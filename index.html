@@ -126,8 +126,8 @@
                     // Ya está autenticado en la instancia de Delivery, redirigimos
                     window.location.href = URLs.delivery;
                 } else {
-                    // Si es operativo, necesita sesión en la app default (app.html)
-                    await authService.loginWithPIN(pin, false);
+                    // Si es operativo, permanece en la instancia 'DeliveryApp' (aislada)
+                    // Esto evita cerrar la sesión de Google del administrador.
                     window.location.href = URLs.app + '?role=' + role;
                 }
             } catch (e) {

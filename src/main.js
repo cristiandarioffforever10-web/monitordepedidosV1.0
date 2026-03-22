@@ -38,77 +38,100 @@ const handlers = {
         }
         return databaseService.updateStaff(list);
     },
-    onSignOut: () => authService.logout().finally(() => {
-        localStorage.removeItem('rutatotal_role');
-        const URLs = getURLs();
-        window.location.href = URLs.login;
-    })
+    onSignOut: () => {
+        const isOperativo = window.AppState.data.userRole === 'operativo' || window.AppState.data.userRole === 'repartidor';
+        // Solo cerramos la instancia que nos corresponde (false = admin, true = delivery/pin)
+        authService.logout(isOperativo).finally(() => {
+            // No borramos localStorage para no afectar a otras pestañas activas
+            const URLs = getURLs();
+            window.location.href = URLs.login;
+        });
+    }
 };
 
 // Initialize Application
 const init = async () => {
     const loadingScreen = document.getElementById('loading-screen');
     
-    authService.onAuthChange(async (user) => {
-        if (user) {
-            let role = localStorage.getItem('rutatotal_role') || 'operativo';
-            let isAuthorized = false;
+    // 1. Determinar el rol DESEADO para ESTA pestaña específica (vía URL)
+    const urlParams = new URLSearchParams(window.location.search);
+    const roleFromURL = urlParams.get('role'); // 'admin' o 'operativo'
+    
+    // Respaldo en localStorage solo si no hay URL (poco probable tras login)
+    const activeRole = roleFromURL || localStorage.getItem('rutatotal_role') || 'operativo';
+    const isOperativoMode = activeRole === 'operativo' || activeRole === 'repartidor';
 
-            if (user.isAnonymous) {
-                // Si es anónimo, confiamos en que pasó por el flujo de PIN en login.html
-                // y que el rol en localStorage es correcto. 
-                isAuthorized = role === 'operativo';
-            } else {
-                // Si es Google Auth, verificamos en Firestore
-                isAuthorized = await authService.checkAuthorization(user.email);
-                role = isAuthorized ? 'admin' : null;
-            }
-            
-            if (!isAuthorized) {
-                console.warn("User authenticated but not authorized.");
-                await authService.logout();
-                const urls = getURLs();
-                window.location.href = urls.login + '?error=unauthorized';
-                return;
-            }
+    console.log(`[APP] Iniciando en modo: ${activeRole.toUpperCase()}`);
 
-            window.AppState.data.userRole = role; // Store role in state
-            window.AppState.update('currentUser', user);
-            
-            const userDisplay = document.getElementById('user-display');
-            if (userDisplay) {
-                const displayName = user.isAnonymous ? localStorage.getItem('rutatotal_staff_name') : user.email;
-                userDisplay.textContent = `${role.toUpperCase()} • ${displayName}`;
-            }
+    // Handler unificado de autenticación
+    const handleAuth = async (user, sourceIsDelivery) => {
+        // Ignorar si la fuente no coincide con el modo de esta pestaña
+        // (Evita que el login anónimo de otra pestaña pise al Admin de esta)
+        if (activeRole === 'admin' && sourceIsDelivery) return;
+        if (isOperativoMode && !sourceIsDelivery) return;
 
-            // Aplicar restricciones de rol antes de mostrar la app
-            applyRoleRestrictions(role);
-
-    // Subscribe to real-time data ONLY after verification
-    databaseService.subscribeToOrders((orders) => window.AppState.update('orders', orders));
-    databaseService.subscribeToStaff((staff) => window.AppState.update('staff', staff));
-
-    // Intervalo para actualizar temporizadores visuales de repartidores (cada 30 seg)
-    setInterval(() => {
-        if (window.AppState.data.orders && window.AppState.data.staff) {
-            uiManager.updateDeliveryTimers(window.AppState.data.orders, window.AppState.data.staff);
-        }
-    }, 30000);
-
-    if (loadingScreen) {
-                loadingScreen.style.opacity = '0';
-                setTimeout(() => loadingScreen.style.display = 'none', 500);
-            }
-        } else {
-            // No user, redirect to login if not already there
+        if (!user) {
+            console.warn(`[AUTH] Sin sesión activa en instancia ${sourceIsDelivery ? 'Aislada' : 'Default'}`);
             const urls = getURLs();
             if (!window.location.pathname.includes(urls.login)) {
                 window.location.href = urls.login;
             }
+            return;
         }
-    });
 
-    // Inicilizamos sin login automático
+        // Verificación de Autorización
+        let isAuthorized = false;
+        let finalRole = activeRole;
+
+        if (user.isAnonymous) {
+            isAuthorized = isOperativoMode;
+        } else {
+            isAuthorized = await authService.checkAuthorization(user.email);
+            finalRole = isAuthorized ? 'admin' : null;
+        }
+
+        if (!isAuthorized) {
+            console.error("[AUTH] Usuario no autorizado para este rol.");
+            await authService.logout(sourceIsDelivery);
+            return;
+        }
+
+        // Configuración de Estado
+        window.AppState.data.userRole = finalRole;
+        window.AppState.update('currentUser', user);
+
+        const userDisplay = document.getElementById('user-display');
+        if (userDisplay) {
+            const displayName = user.isAnonymous ? localStorage.getItem('rutatotal_staff_name') : user.email;
+            userDisplay.textContent = `${finalRole.toUpperCase()} • ${displayName}`;
+        }
+
+        // Inicialización de Datos (Solo una vez)
+        if (!window.AppState.data.isInitialized) {
+            window.AppState.data.isInitialized = true;
+            applyRoleRestrictions(finalRole);
+            
+            databaseService.subscribeToOrders((orders) => window.AppState.update('orders', orders));
+            databaseService.subscribeToStaff((staff) => window.AppState.update('staff', staff));
+            
+            setInterval(() => {
+                const { orders, staff } = window.AppState.data;
+                if (orders && staff) uiManager.updateDeliveryTimers(orders, staff);
+            }, 30000);
+
+            if (loadingScreen) {
+                loadingScreen.style.opacity = '0';
+                setTimeout(() => loadingScreen.style.display = 'none', 500);
+            }
+        }
+    };
+
+    // Escuchar solo la instancia que le corresponde a ESTA pestaña
+    if (activeRole === 'admin') {
+        authService.onAuthChange((user) => handleAuth(user, false), false);
+    } else {
+        authService.onAuthChange((user) => handleAuth(user, true), true);
+    }
 };
 
 function applyRoleRestrictions(role) {
