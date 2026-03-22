@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Acceso Logística 360</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; font-family: 'Inter', sans-serif; }
+        .glass { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); }
+        .role-card { transition: all 0.3s ease; cursor: pointer; border: 2px solid transparent; }
+        .role-card.active { border-color: #10b981; background: rgba(16, 185, 129, 0.1); }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+    <canvas id="bg-canvas" class="fixed inset-0 w-full h-full z-[-1] pointer-events-none"></canvas>
+
+    <div id="login-container" class=" mx-5 relative z-10 ">
+        <div class="text-center mb-8">
+            <div class="bg-emerald-500 w-16 h-16 rounded-2xl flex items-center justify-center text-white text-2xl mx-auto mb-4 shadow-lg shadow-emerald-500/20">
+                <i class="fas fa-shield-alt"></i>
+            </div>
+            <h1 class="text-2xl font-black uppercase tracking-tight">RutaTotal<span class="text-emerald-500">360</span></h1>
+            <p class="text-slate-400 text-xs mt-2 uppercase tracking-widest">Panel de Acceso Seguro</p>
+        </div>
+
+        <div class="glass p-8 rounded-3xl shadow-2xl">
+            <div class="text-center mb-6">
+                <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Administradores</p>
+                <button onclick="handleGoogleLogin()" class="w-full flex items-center justify-center gap-4 bg-white hover:bg-slate-100 text-slate-900 font-bold py-4 rounded-xl transition-all shadow-lg group mb-6">
+                    <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" class="w-5 h-5" alt="Google">
+                    <span class="text-sm">Iniciar Sesión con Google</span>
+                </button>
+
+                <div class="relative flex items-center gap-4 mb-6">
+                    <div class="flex-grow border-t border-slate-700"></div>
+                    <span class="text-[10px] font-bold text-slate-500 uppercase">o Personal Operativo</span>
+                    <div class="flex-grow border-t border-slate-700"></div>
+                </div>
+
+                <div class="space-y-4">
+                    <input type="password" id="pin-code" placeholder="PIN de Acceso" class="w-full bg-slate-900 border border-slate-700 p-4 rounded-xl focus:border-emerald-500 outline-none transition-all text-center tracking-widest">
+                    <button onclick="handlePINLogin()" class="w-full bg-slate-800 hover:bg-slate-700 text-emerald-500 font-black py-4 rounded-xl uppercase text-xs tracking-widest shadow-lg transition-all">
+                        Entrar con PIN
+                    </button>
+                </div>
+            </div>
+
+            <p id="error-msg" class="text-red-500 text-[10px] font-bold text-center mt-4 hidden uppercase"></p>
+        </div>
+    </div>
+
+    <!-- Simulación de App Principal -->
+    <div id="app-content" class="hidden text-center">
+        <h1 class="text-4xl font-black">BIENVENIDO: <span id="user-role-display" class="text-emerald-500"></span></h1>
+        <p class="mt-4 text-slate-400">Redirigiendo a la consola de despacho...</p>
+        <button onclick="window.location.href = window.getURLs().login" class="mt-8 text-xs text-slate-500 underline uppercase">Cerrar Sesión</button>
+    </div>
+
+    <script type="module">
+        import { getURLs } from './src/config/urls.js';
+        import { authService } from './src/services/auth.service.js';
+
+        const URLs = getURLs();
+
+        // 1. Verificación automática al cargar (para retornos de Redirect)
+        const initSession = async () => {
+            try {
+                // Comprobar si volvemos de un redirect
+                const userFromRedirect = await authService.handleRedirectResult();
+                if (userFromRedirect) {
+                    await verifyAndRedirect(userFromRedirect);
+                }
+                // SE ELIMINÓ EL ESCUCHADOR onAuthChange PARA EVITAR REDIRECCIÓN AUTOMÁTICA
+            } catch (e) {
+                console.error("Session Init Error:", e);
+            }
+        };
+
+        const verifyAndRedirect = async (user) => {
+            const isAuthorized = await authService.checkAuthorization(user.email);
+            if (isAuthorized) {
+                localStorage.setItem('rutatotal_role', 'admin');
+                window.location.href = URLs.app + '?role=admin';
+            } else {
+                await authService.logout();
+                showError("Usuario no autorizado. Contacte al administrador.");
+            }
+        };
+
+        window.handleGoogleLogin = async () => {
+            const errorMsg = document.getElementById('error-msg');
+            if (errorMsg) errorMsg.classList.add('hidden');
+
+            try {
+                const user = await authService.loginWithGoogle();
+                if (user) await verifyAndRedirect(user);
+            } catch (e) {
+                console.error("Login Error:", e);
+                showError("Error al iniciar sesión con Google: " + (e.message || "Error desconocido"));
+            }
+        };
+
+        // Ejecutar inicialización
+        initSession();
+
+
+        window.handlePINLogin = async () => {
+            const pin = document.getElementById('pin-code').value;
+            if (!pin) {
+                showError("Ingresa tu PIN de acceso");
+                return;
+            }
+
+            try {
+                // 1. Validamos el PIN usando la instancia 'DeliveryApp'. 
+                // Esto NO cierra la sesión de Admin (Google Auth) en la app principal.
+                const staffData = await authService.loginWithPIN(pin, true);
+                const role = staffData.role || 'operativo';
+                
+                localStorage.setItem('rutatotal_role', role);
+                localStorage.setItem('rutatotal_staff_name', staffData.name || 'Operario');
+
+                if (role === 'repartidor') {
+                    // Ya está autenticado en la instancia de Delivery, redirigimos
+                    window.location.href = URLs.delivery;
+                } else {
+                    // Si es operativo, necesita sesión en la app default (app.html)
+                    await authService.loginWithPIN(pin, false);
+                    window.location.href = URLs.app + '?role=' + role;
+                }
+            } catch (e) {
+                console.error("Login Error:", e);
+                showError("Acceso denegado: PIN incorrecto");
+            }
+        };
+
+        function showError(text) {
+            const msg = document.getElementById('error-msg');
+            msg.textContent = text;
+            msg.classList.remove('hidden');
+            setTimeout(() => msg.classList.add('hidden'), 5000);
+        }
+
+        window.getURLs = () => URLs;
+    </script>
+    <script>
+        // --- Animación de Mapa Topográfico / Rutas (Estilo Centro de Control) ---
+        const canvas = document.getElementById('bg-canvas');
+        const ctx = canvas.getContext('2d');
+        
+        let w, h;
+        let routes = [];
+
+        function initCanvas() {
+            w = canvas.width = window.innerWidth;
+            h = canvas.height = window.innerHeight;
+            initRoutes();
+        }
+
+        function initRoutes() {
+            routes = [];
+            const nodes = [];
+            // Crear nodos estratégicos (como depósitos o clientes)
+            for(let i = 0; i < 25; i++) {
+                nodes.push({ x: Math.random() * w, y: Math.random() * h });
+            }
+
+            // Crear rutas entre nodos
+            for(let i = 0; i < 45; i++) {
+                const nodeA = nodes[Math.floor(Math.random() * nodes.length)];
+                const nodeB = nodes[Math.floor(Math.random() * nodes.length)];
+                routes.push({
+                    x1: nodeA.x, 
+                    y1: nodeA.y,
+                    cx1: nodeA.x + (Math.random() - 0.5) * 400,
+                    cy1: nodeA.y + (Math.random() - 0.5) * 400,
+                    cx2: nodeB.x + (Math.random() - 0.5) * 400,
+                    cy2: nodeB.y + (Math.random() - 0.5) * 400,
+                    x2: nodeB.x,
+                    y2: nodeB.y,
+                    progress: Math.random(),
+                    speed: Math.random() * 0.0015 + 0.0005,
+                    length: Math.random() * 0.15 + 0.05
+                });
+            }
+        }
+
+        function getBezierXY(t, sx, sy, cp1x, cp1y, cp2x, cp2y, ex, ey) {
+            return {
+                x: Math.pow(1-t,3)*sx + 3*t*Math.pow(1-t,2)*cp1x + 3*t*t*(1-t)*cp2x + t*t*t*ex,
+                y: Math.pow(1-t,3)*sy + 3*t*Math.pow(1-t,2)*cp1y + 3*t*t*(1-t)*cp2y + t*t*t*ey
+            };
+        }
+
+        function draw() {
+            ctx.fillStyle = '#0f172a'; // Fondo base (Tailwind slate-900 oscuro)
+            ctx.fillRect(0, 0, w, h);
+
+            // Grid topográfico sutil
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.02)';
+            ctx.lineWidth = 1;
+            const gridSize = 60;
+            ctx.beginPath();
+            for(let x = 0; x < w; x += gridSize) { ctx.moveTo(x, 0); ctx.lineTo(x, h); }
+            for(let y = 0; y < h; y += gridSize) { ctx.moveTo(0, y); ctx.lineTo(w, y); }
+            ctx.stroke();
+
+            // Dibujar las rutas (bezier curves)
+            ctx.strokeStyle = 'rgba(16, 185, 129, 0.06)'; // Emerald 500 muy sutil
+            ctx.lineWidth = 1.5;
+            routes.forEach(route => {
+                ctx.beginPath();
+                ctx.moveTo(route.x1, route.y1);
+                ctx.bezierCurveTo(route.cx1, route.cy1, route.cx2, route.cy2, route.x2, route.y2);
+                ctx.stroke();
+            });
+
+            // Animar los puntos emisores (vehículos/entregas)
+            routes.forEach(route => {
+                route.progress += route.speed;
+                if (route.progress > 1) route.progress = 0;
+
+                const tailCount = 12; // Segmentos de la cola luminosa
+                for(let i = 0; i < tailCount; i++) {
+                    let t = route.progress - (i * (route.length / tailCount));
+                    if(t < 0) continue; 
+                    
+                    const pos = getBezierXY(t, route.x1, route.y1, route.cx1, route.cy1, route.cx2, route.cy2, route.x2, route.y2);
+                    
+                    ctx.beginPath();
+                    ctx.arc(pos.x, pos.y, i === 0 ? 2.5 : 1.5, 0, Math.PI * 2);
+                    
+                    const alpha = 1 - (i / tailCount);
+                    ctx.fillStyle = `rgba(16, 185, 129, ${alpha})`;
+                    
+                    if(i === 0) {
+                        ctx.shadowColor = '#10b981';
+                        ctx.shadowBlur = 12;
+                    } else {
+                        ctx.shadowBlur = 0;
+                    }
+                    
+                    ctx.fill();
+                }
+            });
+
+            requestAnimationFrame(draw);
+        }
+
+        window.addEventListener('resize', initCanvas);
+        initCanvas();
+        requestAnimationFrame(draw);
+    </script>
+</body>
+</html>

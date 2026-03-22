@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Mostrador Digital - RutaTotal 360</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <script src="https://unpkg.com/tone@14.7.77/build/Tone.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
+
+    <script type="module" src="./src/main.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+
+        :root {
+            --bg-main: #0f172a;
+            /*#F4F7F6*/
+            --bg-card: #1e293b;
+            /*#F4F7F6*/
+            --bg-input: #0f172a;
+            --mostrador-bg: #1a0f02;
+            --repartidor-bg: rgba(139, 92, 246, 0.06);
+            --accent-emerald: #00A382;
+            --accent-violet: #8b5cf6;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --border: rgba(255, 255, 255, 0.05);
+            --shadow: rgba(0, 0, 0, 0.5);
+        }
+
+        body.light-mode {
+
+            --bg-main: #0f172a;
+            /*  #F4F7F6 */
+            --bg-card: #ffffff;
+            --bg-input: #f8fafc;
+            --mostrador-bg: #2F1B05;
+            --repartidor-bg: rgba(139, 92, 246, 0.04);
+            --text-main: #0f172a;
+            --text-muted: #64748b;
+            --border: rgba(0, 0, 0, 0.08);
+            --shadow: rgba(0, 0, 0, 0.1);
+        }
+
+        /* Forzar variables de modo oscuro en Centro de Reportes (Histórico) */
+        #historyModal {
+            --bg-card: #1e293b;
+            --bg-input: #0f172a;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --border: rgba(255, 255, 255, 0.05);
+            --shadow: rgba(0, 0, 0, 0.5);
+            color: var(--text-main);
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-main);
+            color: var(--text-main);
+            touch-action: manipulation;
+            overflow: hidden;
+            transition: background-color 0.3s ease, color 0.3s ease;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .column-scroll::-webkit-scrollbar {
+            width: 4px;
+        }
+
+        .column-scroll::-webkit-scrollbar-thumb {
+            background: var(--text-muted);
+            border-radius: 10px;
+            opacity: 0.3;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(2, 6, 23, 0.85);
+            justify-content: center;
+            align-items: center;
+            backdrop-filter: blur(12px);
+        }
+
+        .modal-content {
+            background: var(--bg-card);
+            padding: 32px;
+            border-radius: 24px;
+            width: 95%;
+            max-width: 1100px;
+            max-height: 90vh;
+            overflow-y: auto;
+            border: 1px solid var(--border);
+            box-shadow: 0 25px 50px -12px var(--shadow);
+        }
+
+        .card-draggable {
+            cursor: grab;
+            user-select: none;
+            touch-action: none;
+            position: relative;
+            transition: transform 0.2s, box-shadow 0.2s, background-color 0.3s ease;
+            background: var(--bg-card);
+            color: var(--text-main);
+        }
+
+        .drop-zone-active {
+            border: 2px dashed var(--accent-emerald) !important;
+            background-color: rgba(16, 185, 129, 0.1) !important;
+        }
+
+        #drag-ghost {
+            position: fixed;
+            pointer-events: none;
+            z-index: 9999;
+            display: none;
+            opacity: 0.9;
+            background: var(--bg-card);
+            padding: 12px;
+            border-radius: 12px;
+            border: 2px solid var(--accent-emerald);
+            width: 180px;
+            box-shadow: 0 20px 25px -5px var(--shadow);
+            transform: scale(0.9);
+        }
+
+        .num-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            font-weight: 800;
+            border-radius: 8px;
+            transition: all 0.2s ease;
+            border: 1px solid var(--border);
+            background: var(--bg-card);
+            color: var(--text-muted);
+            cursor: pointer;
+            height: 38px;
+        }
+
+        .num-btn:hover {
+            filter: brightness(1.2);
+            transform: translateY(-1px);
+        }
+
+        .num-btn-delivered {
+            background-color: var(--accent-emerald) !important;
+            color: white !important;
+            border-color: var(--accent-emerald) !important;
+        }
+
+        .num-btn-active {
+            border-color: currentColor;
+            color: white;
+        }
+
+        #loading-screen {
+            position: fixed;
+            inset: 0;
+            background: var(--bg-main);
+            z-index: 10001;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        input,
+        select {
+            background: var(--bg-input) !important;
+            color: var(--text-main) !important;
+            border: 1px solid var(--border) !important;
+        }
+
+        .glass-panel {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+        }
+
+        /* Menú lateral siempre oscuro, incluso en modo claro */
+        #side-menu {
+            background-color: #0f172a !important;
+            border-left-color: rgba(255, 255, 255, 0.05) !important;
+        }
+
+        /* Header icon-only buttons that expand on hover to show label */
+        .header-icon-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0;
+            width: 48px;
+            /* Increased from 40px */
+            height: 48px;
+            /* Added explicit height for touch */
+            justify-content: center;
+            /* Center icon when collapsed */
+            overflow: hidden;
+            white-space: nowrap;
+            transition: width 180ms ease, background-color 150ms ease;
+            padding-left: 0;
+            padding-right: 0;
+            border-radius: 12px;
+            /* Slightly more rounded */
+        }
+
+        .header-icon-btn .btn-label {
+            opacity: 0;
+            max-width: 0;
+            margin-left: 0;
+            transform: translateX(-6px);
+            transition: all 0.2s ease;
+            display: inline-block;
+            font-size: 11px;
+            /* Increased from default implicit small */
+            font-weight: 700;
+        }
+
+        .header-icon-btn:hover {
+            width: auto;
+            /* Allow auto width */
+            padding-left: 16px;
+            padding-right: 16px;
+            min-width: 160px;
+        }
+
+        .header-icon-btn:hover .btn-label {
+            opacity: 1;
+            max-width: 200px;
+            margin-left: 8px;
+            transform: translateX(0);
+        }
+
+        .cocina-panel {
+            background: #2F1B05 !important;
+            border: 1px solid rgba(217, 119, 6, 0.3) !important;
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(217, 119, 6, 0.1);
+            transition: all 300ms ease;
+        }
+
+        body.light-mode .cocina-panel {
+            background: #2F1B05 !important;
+            border-color: rgba(217, 119, 6, 0.4) !important;
+        }
+
+        /* Repartidores: fondo distintivo para cada columna (aplicado desde JS) */
+
+
+
+        /* Repartidores: fondo distintivo para cada columna (aplicado desde JS) */
+        /* Forzar que el fondo de las columnas de repartidores use el fondo principal (modo oscuro) */
+        .rep-col .kanban-col {
+            background: var(--bg-main) !important;
+        }
+
+        /* En modo claro, fondo blanco con border de color distintivo para columnas de repartidores */
+        body.light-mode .rep-col .kanban-col {
+            background: #ffffff !important;
+            border: 2px solid var(--rep-color-border, rgba(0, 150, 255, 0.4)) !important;
+            box-shadow: 0 0 12px var(--rep-color-shadow, rgba(0, 150, 255, 0.15)) !important;
+        }
+
+        /* En modo oscuro: tarjetas de pedidos (Cocina, Mostrador, Repartidores) deben ser blancas */
+        body:not(.light-mode) .kanban-col .glass-panel {
+            background: #ffffff !important;
+            color: #0f172a !important;
+            /* Mantener borde izquierdo para que JS pueda colorearlo (no sobreescribir border-left-width) */
+            border-top: 1px solid rgba(0, 0, 0, 0.08);
+            border-right: 1px solid rgba(0, 0, 0, 0.08);
+            border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+            box-shadow: 0 8px 20px rgba(2, 6, 23, 0.06) !important;
+        }
+
+        /* En modo oscuro: botones numéricos de la cocina (tickets) deben ser blancos por defecto, pero permitir estilos inline (JS) */
+        body:not(.light-mode) .cocina-panel .num-btn {
+            background: #ffffff;
+            color: #0f172a;
+            border-color: rgba(0, 0, 0, 0.08);
+        }
+
+        /* Reducir en 15% el ancho de cada columna de repartidor */
+        .rep-col {
+            width: 17rem !important;
+        }
+
+        #header-section {
+            flex-shrink: 0;
+        }
+
+        #ops-panel {
+            min-height: auto;
+            flex-shrink: 0;
+        }
+
+        #kanban-container {
+            flex-grow: 1;
+            overflow-y: auto;
+        }
+
+        /* Evita fondo blanco del contenedor principal en modo claro */
+        body.light-mode .app-main-wrap {
+            background-color: #F4F7F6;
+            /*#e0e7ff  tono más oscuro y profesional , otro #f1f5f9*/
+
+            padding: 1rem;
+            /* alineado con p-4 del body */
+            box-sizing: border-box;
+            border-radius: 1rem;
+            border: 1px solid rgba(0, 150, 255, 0.3);
+            box-shadow: 0 0 20px rgba(0, 150, 255, 0.1);
+            /* 0 0 15px rgba(0, 150, 255, 0.2)*/
+            transition: box-shadow 220ms ease, border-color 220ms ease;
+        }
+
+        @media (min-width: 768px) {
+
+            /* en pantallas medianas y grandes alinear con md:px-8 y md:pt-6 */
+            body.light-mode .app-main-wrap,
+            body.dark-mode .app-main-wrap {
+                padding: 1rem 1.8rem 0.0rem 1.8rem;
+            }
+        }
+
+        /* Estilos específicos para Modo Oscuro (solo cuando body tenga la clase 'dark-mode') */
+        body.dark-mode .app-main-wrap {
+            border: 1px solid rgba(0, 150, 255, 0.3);
+            box-shadow: 0 0 20px rgba(0, 150, 255, 0.1);
+            transition: box-shadow 220ms ease, border-color 220ms ease;
+            border-radius: 1rem;
+        }
+
+        /* Botones 'FINALIZAR' estilizados (dentro de tickets blancos) */
+        /* Botones 'FINALIZAR' estilizados (dentro de tickets blancos) */
+        .kanban-col .glass-panel .finish-btn {
+            background-color: #10b981 !important;
+            /* Emerald-500 Solid */
+            color: #ffffff !important;
+            /* White text */
+            border: 1px solid #059669 !important;
+            /* Emerald-600 border */
+            border-radius: 8px !important;
+            font-weight: 800 !important;
+            font-size: 12px !important;
+            /* Increased font size */
+            letter-spacing: 0.5px !important;
+            transition: all 0.2s ease !important;
+            box-shadow: 0 4px 6px -1px rgba(16, 185, 129, 0.2) !important;
+            cursor: pointer !important;
+            padding: 0.5rem 1rem !important;
+            /* Larger touch target */
+            text-transform: uppercase !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+        }
+
+        /* Estilos para botones de asignación directa */
+        /* Estilos para botones de asignación directa */
+        .assign-btn {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            font-size: 11px;
+            /* Increased from 9px */
+            font-weight: 700;
+            text-transform: uppercase;
+            padding: 10px 14px;
+            /* Larger touch target */
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            flex-grow: 1;
+            text-align: center;
+        }
+
+        .assign-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: var(--text-main);
+            border-color: rgba(255, 255, 255, 0.2);
+        }
+
+        .kanban-col .glass-panel .finish-btn:hover {
+            background-color: #00A382 !important;
+            /* Verde esmeralda sólido */
+            color: #ffffff !important;
+            box-shadow: 0 8px 24px rgba(0, 163, 130, 0.16) !important;
+        }
+
+        .kanban-col .glass-panel .finish-btn:active {
+            transform: scale(0.98) !important;
+        }
+
+        .kanban-col .glass-panel .finish-btn:focus {
+            outline: none !important;
+            box-shadow: 0 0 0 4px rgba(0, 163, 130, 0.12) !important;
+        }
+
+        /* Estado Local: Negro Sólido con Texto Blanco */
+        .btn-local-gradiente {
+            background: #000000 !important;
+            color: #ffffff !important;
+            border: 1px solid rgba(255,255,255,0.1) !important;
+            font-weight: 900 !important;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4) !important;
+        }
+
+        .badge-local-gradiente {
+            background: #000000 !important;
+            color: #ffffff !important;
+            font-weight: 900 !important;
+        }
+
+        .card-local-border {
+            border: 1px solid rgba(255,255,255,0.1) !important;
+        }
+    </style>
+</head>
+
+<body class="p-4 md:px-8 md:pt-6 dark-mode">
+
+    <div id="loading-screen">
+        <div class="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-emerald-500 mb-4"></div>
+        <p class="text-slate-400 font-bold uppercase tracking-widest text-xs">Sincronizando con la Nube...</p>
+    </div>
+
+    <div id="drag-ghost"></div>
+
+    <div class="max-w-7xl mx-auto w-full flex flex-col h-full app-main-wrap">
+        <!-- Header -->
+        <header id="header-section" class="flex flex-col md:flex-row justify-between items-center gap-4 mb-4">
+            <div class="flex items-center gap-4 flex-shrink-0">
+                <!-- Icono de Radar/Control (Sustituye a la bolsa genérica para reflejar "Torre de Control") -->
+                <div class="relative flex items-center justify-center">
+                    <i class="fas fa-satellite-dish text-2xl text-emerald-500 logo-icon animate-pulse-slow"></i>
+                    <span
+                        class="absolute -top-1 -right-1 w-2 h-2 bg-emerald-400 rounded-full shadow-[0_0_8px_#10b981]"></span>
+                </div>
+
+                <div class="flex items-center gap-4">
+                    <div>
+                        <h1 class="text-2xl font-black text-main tracking-tight uppercase leading-none mb-1">RUTATOTAL<span
+                                class="text-emerald-500">360</span></h1>
+                        <p id="user-display"
+                            class="text-[11px] text-emerald-500/80 font-mono uppercase tracking-tighter font-bold">
+                            CONECTANDO...</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button id="logoutBtn-quick" class="p-2 text-slate-600 hover:text-red-500 transition-all rounded-full hover:bg-red-500/10 hidden" title="Cerrar Sesión">
+                            <i class="fas fa-sign-out-alt"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex items-center gap-4">
+                <button id="burger-menu-btn" class="p-3 bg-slate-800 text-white rounded-xl hover:bg-slate-700 transition-all shadow-lg active:scale-95">
+                    <i class="fas fa-bars text-xl"></i>
+                </button>
+            </div>
+        </header>
+
+        <!-- Matriz de Tickets - cocina - preparación - ya tomados -->
+        <div id="ops-panel" class="w-full mb-1">
+            <div
+                class="glass-panel cocina-panel rounded-2xl p-2 shadow-xl flex items-center gap-2 h-full overflow-hidden">
+                <button id="prev-btn"
+                    class="w-12 h-full flex flex-shrink-0 items-center justify-center hover:bg-black/20 rounded-lg transition text-slate-400 active:bg-black/40"><i
+                        class="fas fa-chevron-left text-xl"></i></button>
+
+                <div class="flex-grow overflow-hidden h-full relative">
+                    <div id="slider-track" class="flex h-full transition-transform duration-500 ease-out"></div>
+                </div>
+
+                <button id="next-btn"
+                    class="w-12 h-full flex flex-shrink-0 items-center justify-center hover:bg-black/20 rounded-lg transition text-slate-400 active:bg-black/40"><i
+                        class="fas fa-chevron-right text-xl"></i></button>
+            </div>
+        </div>
+
+        <!-- Main Kanban -->
+        <main id="kanban-container" class="">
+            <div id="orders-kanban" class="flex gap-4 overflow-x-auto pb-6 h-full">
+                <!-- Las columnas de repartidores se cargarán dinámicamente aquí -->
+            </div>
+        </main>
+    </div>
+
+    <!-- Modales -->
+    <div id="staffModal" class="modal">
+        <div class="modal-content max-w-sm">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-lg font-black text-main">Gestión de Flota</h2>
+                <button id="close-staff-modal-btn" class="text-slate-500 hover:text-white text-2xl">&times;</button>
+            </div>
+            <div class="flex gap-2 mb-6">
+                <input type="text" id="new-staff-name" placeholder="Nombre..."
+                    class="w-full p-3 rounded-xl text-sm font-bold">
+                <button id="add-staff-btn" class="bg-emerald-600 text-white px-4 rounded-xl"><i
+                        class="fas fa-user-plus text-xs"></i></button>
+            </div>
+            <div id="staff-list" class="space-y-2"></div>
+        </div>
+    </div>
+
+    <div id="historyModal" class="modal">
+        <div class="modal-content">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-xl font-black text-main">Centro de Reportes</h2>
+                <button id="close-history-modal-btn" class="text-slate-500 text-2xl">&times;</button>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-3 mb-6">
+                <div class="bg-slate-950 p-4 rounded-2xl border border-emerald-500/20">
+                    <p class="text-[8px] font-black uppercase text-slate-500 mb-1">Entregas Totales</p>
+                    <p id="stat-total-orders" class="text-3xl font-black text-emerald-500">0</p>
+                </div>
+                <div id="staff-performance-labels" class="md:col-span-3 flex flex-wrap gap-2"></div>
+            </div>
+            <div class="mb-4 relative">
+                <input type="text" id="history-search" placeholder="Buscar ticket..."
+                    class="w-full p-3 pl-10 rounded-xl text-sm font-bold">
+                <i class="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
+            </div>
+            <div class="glass-panel rounded-2xl overflow-hidden">
+                <div class="max-h-[300px] overflow-y-auto column-scroll">
+                    <table class="w-full text-left text-xs">
+                        <thead class="sticky top-0 bg-slate-900">
+                            <tr class="text-slate-500 font-black">
+                                <th class="px-6 py-3 uppercase">Código</th>
+                                <th class="px-6 py-3 uppercase">Operador</th>
+                                <th class="px-6 py-3 uppercase">Estado</th>
+                                <th class="px-6 py-3 text-right pr-6">Acción</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-table-body" class="divide-y divide-slate-800/50"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="mt-6 flex justify-between gap-4">
+                <button id="clear-history-btn"
+                    class="text-red-400 bg-red-400/10 px-6 py-3 rounded-xl font-black text-[9px] uppercase border border-red-400/20">Limpiar
+                    Todo</button>
+                <button id="download-pdf-btn"
+                    class="bg-violet-600 text-white px-8 py-3 rounded-xl font-black text-[9px] uppercase shadow-xl">Generar
+                    Reporte PDF</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Menú Lateral (Burger) -->
+    <div id="side-menu-overlay" class="fixed inset-0 bg-slate-950/60 backdrop-blur-md z-[100] hidden opacity-0 transition-opacity duration-300"></div>
+    <div id="side-menu" class="fixed right-0 top-0 h-full w-80 glass-panel border-l border-white/5 z-[101] translate-x-full transition-transform duration-300 p-8 flex flex-col gap-8 shadow-2xl">
+        <div class="flex items-center justify-between">
+            <div class="flex flex-col">
+                <h2 class="text-xl font-black text-white uppercase tracking-tighter">Panel Maestro</h2>
+                <div class="h-1 w-12 bg-emerald-500 rounded-full mt-1"></div>
+            </div>
+            <button id="close-side-menu" class="p-2 text-slate-400 hover:text-white transition-colors bg-white/5 rounded-lg">
+                <i class="fas fa-times text-xl"></i>
+            </button>
+        </div>
+        
+        <div class="flex flex-col gap-4">
+            <p class="text-[10px] text-slate-500 font-black uppercase tracking-[0.2em] mb-2">Operaciones Estratégicas</p>
+            <button id="open-staff-modal-btn" class="flex items-center w-full p-4 rounded-2xl font-bold text-sm transition-all duration-200 bg-white/5 text-slate-300 hover:bg-emerald-500/10 hover:text-emerald-400 border border-white/5">
+                <i class="fas fa-users w-8 text-emerald-500"></i> Gestión de Flota
+            </button>
+            <button id="open-history-modal-btn" class="flex items-center w-full p-4 rounded-2xl font-bold text-sm transition-all duration-200 bg-white/5 text-slate-300 hover:bg-violet-500/10 hover:text-violet-400 border border-white/5">
+                <i class="fas fa-brain w-8 text-violet-500"></i> Reportes & Auditoría
+            </button>
+            <button id="open-archive-modal-btn" class="flex items-center w-full p-4 rounded-2xl font-bold text-sm transition-all duration-200 bg-white/5 text-slate-300 hover:bg-amber-500/10 hover:text-amber-400 border border-white/5">
+                <i class="fas fa-archive w-8 text-amber-500"></i> Archivo Histórico
+            </button>
+            <button id="theme-toggle" class="flex items-center w-full p-4 rounded-2xl font-bold text-sm transition-all duration-200 bg-white/5 text-slate-300 hover:bg-emerald-500/10 hover:text-emerald-400 border border-white/5">
+                <i id="theme-icon" class="fas fa-sun w-8 text-emerald-500"></i> <span id="theme-text">Cambiar Tema</span>
+            </button>
+        </div>
+
+        <div class="mt-auto flex flex-col items-start gap-4">
+       <!-- <button id="toggle-monitor-btn" class="flex items-center justify-center p-4 w-14 rounded-xl transition-all duration-200 bg-red-600 text-white hover:bg-red-500 shadow-lg shadow-red-600/20 border border-red-500/20 flex-shrink-0 active:scale-95" title="Desactivar Monitor">
+                <i class="fas fa-power-off text-lg"></i>
+            </button>-->    
+            <div class="w-full bg-red-500/5 rounded-2xl p-4 border border-red-500/10">
+                <p class="text-[10px] text-red-400/50 font-black uppercase tracking-[0.2em] mb-4">Seguridad de Acceso</p>
+                <button id="logoutBtn" class="flex items-center justify-center w-full p-4 rounded-xl font-black text-xs uppercase transition-all duration-200 bg-red-600 text-white hover:bg-red-500 shadow-lg shadow-red-600/20 active:scale-95">
+                    <i class="fas fa-sign-out-alt mr-3"></i> Cerrar Sesión Segura
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal de Archivo Histórico -->
+    <div id="archiveModal" class="modal">
+        <div class="modal-content">
+            <div class="flex justify-between items-center mb-6">
+                <div>
+                    <h2 class="text-xl font-black text-white uppercase tracking-tighter">Archivo Histórico</h2>
+                    <p class="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-1">Recuperación de Auditoría</p>
+                </div>
+                <button id="close-archive-modal-btn" class="text-slate-500 text-2xl hover:text-white transition-colors">&times;</button>
+            </div>
+
+            <!-- Selector de Mes -->
+            <div id="archive-month-selector" class="flex flex-wrap gap-3 mb-6">
+                <!-- Se llenará dinámicamente -->
+            </div>
+
+            <!-- Selector de Sesión (Limpieza) -->
+            <div id="archive-session-selector" class="hidden flex flex-col gap-2 mb-8">
+                <div class="flex items-center gap-3 mb-2">
+                    <span class="text-[9px] font-black text-slate-500 uppercase tracking-[0.2em]">Seleccione una Limpieza Realizada</span>
+                    <div class="h-px flex-grow bg-slate-800/50"></div>
+                </div>
+                <div id="archive-session-list" class="flex flex-wrap gap-2"></div>
+                <button id="back-to-months" class="mt-4 p-2 text-[9px] font-black text-amber-500 uppercase flex items-center gap-2 hover:bg-amber-500/5 rounded-lg w-max transition-all">
+                    <i class="fas fa-chevron-left"></i> Volver a Meses
+                </button>
+            </div>
+
+            <div id="archive-data-view" class="hidden">
+                <div class="flex items-center gap-3 mb-4">
+                    <div class="h-px flex-grow bg-slate-800"></div>
+                    <span id="archive-selected-month" class="text-[10px] font-black text-amber-500 uppercase tracking-[0.2em]">Seleccione un mes</span>
+                    <div class="h-px flex-grow bg-slate-800"></div>
+                </div>
+
+                <div class="glass-panel rounded-2xl overflow-hidden border border-white/5">
+                    <div class="max-h-[350px] overflow-y-auto column-scroll">
+                        <table class="w-full text-left text-xs">
+                            <thead class="sticky top-0 bg-slate-900 z-10">
+                                <tr class="text-slate-500 font-black border-b border-white/5">
+                                    <th class="px-6 py-4 uppercase">Ticket</th>
+                                    <th class="px-6 py-4 uppercase">Repartidor</th>
+                                    <th class="px-6 py-4 uppercase">Estado</th>
+                                    <th class="px-6 py-4 uppercase">Hora</th>
+                                    <th class="px-6 py-4 text-right pr-6 uppercase">Finalizado</th>
+                                </tr>
+                            </thead>
+                            <tbody id="archive-table-body" class="divide-y divide-white/[0.02]">
+                                <!-- Se llenará dinámicamente -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            
+            <div id="archive-empty-state" class="py-12 text-center">
+                <i class="fas fa-folder-open text-4xl text-slate-800 mb-4"></i>
+                <p class="text-slate-500 text-sm font-bold">Seleccione un periodo para ver los registros archivados</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal de Respuesta a Incidencias (Local) -->
+    <div id="incidentResponseModal" class="modal">
+        <div class="modal-content max-w-sm">
+            <div class="text-center mb-6">
+                <div class="w-12 h-12 bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto mb-3">
+                    <i class="fas fa-reply text-emerald-500"></i>
+                </div>
+                <p class="text-[9px] font-black text-emerald-500 uppercase tracking-widest mb-1">Centro de Respuesta</p>
+                <h3 id="resp-modal-ticket-id" class="text-3xl font-black text-white font-mono tracking-tighter">#0</h3>
+            </div>
+            <div class="flex flex-col gap-2">
+                <button class="incident-resp-opt p-4 bg-slate-900 border border-white/5 rounded-xl text-left text-xs font-bold text-slate-300 hover:bg-emerald-500/10 hover:text-emerald-400 transition-all" data-text="Ya lo llamo y te aviso">Ya lo llamo y te aviso</button>
+                <button class="incident-resp-opt p-4 bg-slate-900 border border-white/5 rounded-xl text-left text-xs font-bold text-slate-300 hover:bg-red-500/10 hover:text-red-400 transition-all" data-text="No responde, vuelve">No responde, vuelve</button>
+                <button class="incident-resp-opt p-4 bg-slate-900 border border-white/5 rounded-xl text-left text-xs font-bold text-slate-300 hover:bg-emerald-500/10 hover:text-emerald-400 transition-all" data-text="ahi le aviso">ahi le aviso</button>
+                <button class="incident-resp-opt p-4 bg-slate-900 border border-white/5 rounded-xl text-left text-xs font-bold text-slate-300 hover:bg-emerald-500/10 hover:text-emerald-400 transition-all" data-text="ya me fijo y te aviso">ya me fijo y te aviso</button>
+            </div>
+            <button id="close-resp-modal" class="w-full p-4 text-[10px] font-black text-slate-500 uppercase mt-4 hover:text-white transition-colors">Cancelar</button>
+        </div>
+    </div>
+
+</body>
+
+</html>

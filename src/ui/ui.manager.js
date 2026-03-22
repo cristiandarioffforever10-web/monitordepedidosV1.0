@@ -1,0 +1,837 @@
+// UI Constants
+const COLORS = [{ bg: '#6366f1' }, { bg: '#8b5cf6' }, { bg: '#3b82f6' }, { bg: '#f59e0b' }, { bg: '#ec4899' }, { bg: '#06b6d4' }];
+const STAFF_COLOR_MAP = { lucas: '#007BFF', juan: '#8A2BE2', pedro: '#FF8C00', cri: '#FFD700' };
+
+let currentSlide = 0;
+let searchQuery = "";
+let touchDraggedId = null;
+let synth = null;
+let lastStaffHash = "";
+
+let previousIncidentsMap = {};
+let alertIntervalId = null;
+
+export const uiManager = {
+    // 1. Core Render Loop
+    renderApp(state, handlers) {
+        if (!state) return;
+        const { orders, staff, userRole } = state;
+
+        this.renderKitchen(orders, staff, handlers);
+        this.renderKanban(orders, staff, handlers);
+        this.renderHistory(orders, staff, handlers, userRole);
+        
+        // Iniciar o actualizar temporizadores visuales inmediatamente
+        this.updateDeliveryTimers(orders, staff);
+    },
+
+    // 2. Component: Kitchen (Cocina)
+    renderKitchen(orders, staff, handlers) {
+        const buttons = document.querySelectorAll('.num-btn');
+        if (buttons.length === 0) this.initSliderGrid(handlers);
+
+        buttons.forEach(b => {
+            const n = b.textContent;
+            const o = orders[n];
+
+            b.className = 'num-btn shadow-sm';
+            b.style = '';
+            b.draggable = true;
+
+            if (o) {
+                if (o.status === 'entregado') {
+                    b.classList.add('num-btn-delivered');
+                    b.draggable = false;
+                } else if (o.repartidor) {
+                    const staffIdx = staff.indexOf(o.repartidor);
+                    const assignedColor = this.getStaffColor(o.repartidor, staffIdx);
+                    b.style.backgroundColor = assignedColor;
+                    b.style.borderColor = assignedColor;
+                    b.style.color = 'white';
+                    b.classList.add('num-btn-active');
+                } else {
+                    b.classList.add('btn-local-gradiente');
+                }
+            }
+        });
+
+        const track = document.getElementById('slider-track');
+        if (track) track.style.transform = `translateX(-${currentSlide * 100}%)`;
+    },
+
+    // 3. Component: Kanban Board
+    renderKanban(orders, staff, handlers) {
+        const container = document.getElementById('orders-kanban');
+        if (!container) return;
+
+        const currentHash = JSON.stringify(staff);
+        if (lastStaffHash !== currentHash) {
+            this.rebuildKanbanColumns(container, staff, handlers);
+            lastStaffHash = currentHash;
+        }
+
+        document.querySelectorAll('.kanban-col').forEach(c => c.innerHTML = '');
+
+        const activeOrders = Object.values(orders)
+            .filter(o => o.status !== 'entregado')
+            .sort((a, b) => b.timestamp - a.timestamp);
+
+        let hasUnresolvedIncident = false;
+        const currentIncidentsMap = {};
+
+        activeOrders.forEach(o => {
+            const cardElement = document.createElement('div');
+            cardElement.className = `glass-panel p-4 rounded-xl shadow-md card-draggable flex flex-col gap-3 ${!o.repartidor ? 'card-local-border' : 'border-l-4'}`;
+
+            const staffIdx = staff.indexOf(o.repartidor);
+            cardElement.style.borderLeftColor = o.repartidor ? this.getStaffColor(o.repartidor, staffIdx) : '';
+            cardElement.draggable = true;
+            cardElement.innerHTML = this.createCardHTML(o, staff);
+
+            this.attachCardEvents(cardElement, o, handlers, staff);
+
+            if (o.repartidor) {
+                const safeName = o.repartidor.replace(/\s/g, '');
+                const col = document.getElementById(`col-${safeName}`);
+                if (col) col.appendChild(cardElement);
+            }
+
+            if (o.incident) {
+                currentIncidentsMap[o.id] = true;
+                if (!previousIncidentsMap[o.id]) {
+                    this.playNewIncidentSound();
+                }
+                if (!o.response) {
+                    hasUnresolvedIncident = true;
+                }
+            }
+        });
+
+        previousIncidentsMap = currentIncidentsMap;
+        this.manageAlertInterval(hasUnresolvedIncident);
+    },
+
+    createCardHTML(o, staff) {
+        const isAssigned = !!o.repartidor;
+        let actionArea = '';
+        if (isAssigned) {
+            actionArea = `<button class="finish-btn flex-1 bg-emerald-600 text-white text-xs font-black py-2 px-4 rounded-lg uppercase shadow-lg hover:bg-emerald-500">Finalizar</button>`;
+        } else {
+            actionArea = `<div class="flex flex-wrap gap-2 w-full">` +
+                staff.map(r => `<button class="assign-btn" data-staff="${r}">${r}</button>`).join('') +
+                `</div>`;
+        }
+
+        let incidentArea = '';
+        if (o.incident) {
+            incidentArea = `
+                <div class="bg-red-500/10 border border-red-500/20 p-2 rounded-lg mt-2 animate-pulse">
+                    <p class="text-[9px] text-red-500 font-black uppercase">
+                        <i class="fas fa-exclamation-triangle mr-1"></i>INCIDENCIA: ${o.incident}
+                    </p>
+                    ${o.response ? `
+                        <div class="mt-1 pt-1 border-t border-red-500/10">
+                            <p class="text-[8px] text-emerald-500 font-bold uppercase">R: ${o.response}</p>
+                        </div>
+                    ` : `
+                        <button class="respond-incident-btn mt-2 w-full py-1.5 bg-red-500 text-white text-[8px] font-black uppercase rounded shadow-lg">Responder</button>
+                    `}
+                </div>
+            `;
+        }
+
+        return `
+            <div class="flex justify-between items-start">
+                <div class="flex flex-col">
+                    <span class="text-[10px] font-black text-muted block uppercase tracking-wide">Ticket</span>
+                    <span class="text-3xl font-black text-main font-mono leading-none my-1">#${o.id}</span>
+                </div>
+                <div class="text-right flex flex-col items-end">
+                    <span class="text-xs font-bold text-slate-500 block mb-1">${o.time}</span>
+                    <span class="text-[10px] font-black block uppercase px-2 py-0.5 rounded ${isAssigned ? 'bg-slate-800 text-white' : 'badge-local-gradiente'}">${isAssigned ? o.repartidor : 'EN CASA'}</span>
+                    ${isAssigned ? '' : '<span class="text-[9px] block text-slate-400 mt-1">Control local</span>'}
+                </div>
+            </div>
+            ${incidentArea}
+            <div class="flex justify-between items-center mt-3 pt-2 border-t border-slate-800/50">
+                    <div class="flex-grow">${actionArea}</div>
+                    <button class="delete-order-btn p-3 text-slate-600 hover:text-red-500 transition hover:bg-red-500/10 rounded-lg ml-2"><i class="fas fa-trash-alt text-lg"></i></button>
+            </div>
+        `;
+    },
+
+    attachCardEvents(card, o, handlers, staff) {
+        card.ondragstart = (e) => e.dataTransfer.setData('id', o.id);
+
+        card.ontouchstart = (e) => this.handleTouchStart(e, card, o.id);
+        card.ontouchmove = (e) => this.handleTouchMove(e);
+        card.ontouchend = (e) => this.handleTouchEnd(e, card, o.id, handlers);
+
+        const respBtn = card.querySelector('.respond-incident-btn');
+        if (respBtn) respBtn.onclick = () => {
+            this.showIncidentResponseMenu(o.id, handlers, o.repartidor);
+        };
+
+        const delBtn = card.querySelector('.delete-order-btn');
+        if (delBtn) delBtn.onclick = () => confirm(`¿Eliminar #${o.id}?`) && handlers.onDeleteOrder(o.id);
+
+        const finBtn = card.querySelector('.finish-btn');
+        if (finBtn) finBtn.onclick = () => handlers.onFinalizeOrder(o.id);
+
+        card.querySelectorAll('.assign-btn').forEach(btn => {
+            btn.onclick = () => handlers.onAssignOrder(o.id, btn.getAttribute('data-staff'));
+        });
+    },
+
+    rebuildKanbanColumns(container, staff, handlers) {
+        container.querySelectorAll('.rep-col').forEach(e => e.remove());
+
+        staff.forEach((r, idx) => {
+            const color = this.getStaffColor(r, idx);
+            const safeName = r.replace(/\s/g, '');
+            const colId = `col-${safeName}`;
+            const inputId = `input-${safeName}`;
+
+            const colWrapper = document.createElement('div');
+            colWrapper.className = "flex flex-col flex-shrink-0 rep-col h-full";
+
+            colWrapper.innerHTML = `
+                <div class="flex justify-between items-center mb-4 px-2">
+                    <span class="text-xl font-black uppercase tracking-widest" style="color: ${color}">${r}</span>
+                </div>
+                <div id="${colId}" data-repartidor="${r}" class="kanban-col flex flex-col gap-3 p-4 rounded-2xl border border-slate-800/50 overflow-y-auto column-scroll flex-grow"></div>
+            `;
+
+            const dz = colWrapper.querySelector('.kanban-col');
+            this.setupDropZone(dz, r, handlers);
+
+            try {
+                dz.style.borderColor = this.hexToRgba(color, 0.12);
+                dz.style.setProperty('--rep-color-border', this.hexToRgba(color, 0.6));
+                dz.style.setProperty('--rep-color-shadow', this.hexToRgba(color, 0.2));
+            } catch (e) { }
+
+            container.appendChild(colWrapper);
+        });
+    },
+
+    // 4. Component: Delivery Timers & SLA Alerts
+    updateDeliveryTimers(orders, staff) {
+        if (!orders || !staff) return;
+
+        staff.forEach(r => {
+            const safeName = r.replace(/\s/g, '');
+            const col = document.getElementById(`col-${safeName}`);
+            const titleEl = document.querySelector(`.rep-col [style*="color"]`); // Selecciona el nombre del repartidor
+            
+            if (!col) return;
+
+            // Encontrar el pedido más antiguo de este repartidor (excluyendo entregados)
+            const staffOrders = Object.values(orders).filter(o => o.repartidor === r && o.status !== 'entregado');
+            
+            if (staffOrders.length === 0) {
+                col.style.backgroundColor = 'transparent';
+                this.updateColTimerLabel(r, null);
+                return;
+            }
+
+            const oldestTimestamp = Math.min(...staffOrders.map(o => o.timestamp));
+            const elapsedMs = Date.now() - oldestTimestamp;
+            const elapsedMin = Math.floor(elapsedMs / (60 * 1000));
+
+            // Aplicar colores según SLA
+            let bgColor = 'transparent';
+            let statusText = '';
+            
+            if (elapsedMin >= 25) {
+                bgColor = 'rgba(220, 38, 38, 0.4)'; // Rojo fuerte
+                statusText = 'CRÍTICO';
+            } else if (elapsedMin >= 20) {
+                bgColor = 'rgba(239, 68, 68, 0.2)'; // Rojo suave
+                statusText = 'RETRASO';
+            } else if (elapsedMin >= 10) {
+                bgColor = 'rgba(253, 224, 71, 0.15)'; // Amarillo suave
+                statusText = 'NORMAL';
+            }
+
+            col.style.backgroundColor = bgColor;
+            col.style.transition = 'background-color 0.5s ease';
+            
+            this.updateColTimerLabel(r, elapsedMin, statusText);
+        });
+    },
+
+    updateColTimerLabel(repartidor, minutes, statusText) {
+        const safeName = repartidor.replace(/\s/g, '');
+        const colWrapper = document.getElementById(`col-${safeName}`)?.closest('.rep-col');
+        if (!colWrapper) return;
+
+        let timerLabel = colWrapper.querySelector('.delivery-timer-label');
+        if (!timerLabel) {
+            const header = colWrapper.querySelector('.flex.justify-between.items-center');
+            timerLabel = document.createElement('span');
+            timerLabel.className = 'delivery-timer-label text-base font-black font-mono px-4 py-1.5 rounded-full';
+            header.appendChild(timerLabel);
+        }
+
+        if (minutes === null) {
+            timerLabel.style.display = 'none';
+        } else {
+            timerLabel.style.display = 'inline-block';
+            timerLabel.textContent = `${minutes}m ${statusText ? `• ${statusText}` : ''}`;
+            
+            // Estilo del label
+            if (minutes >= 25) {
+                timerLabel.className = 'delivery-timer-label text-base font-black font-mono px-4 py-1.5 rounded-full bg-red-600 text-white animate-pulse';
+            } else if (minutes >= 20) {
+                timerLabel.className = 'delivery-timer-label text-base font-black font-mono px-4 py-1.5 rounded-full bg-red-500/50 text-white';
+            } else if (minutes >= 10) {
+                timerLabel.className = 'delivery-timer-label text-base font-black font-mono px-4 py-1.5 rounded-full bg-yellow-500 text-slate-900';
+            } else {
+                timerLabel.className = 'delivery-timer-label text-base font-black font-mono px-4 py-1.5 rounded-full bg-slate-800 text-slate-400';
+            }
+        }
+    },
+
+    // 5. Component: History (Reportes)
+    renderHistory(orders, staff, handlers, role) {
+        const isOperativo = role === 'operativo';
+        const all = Object.values(orders);
+        const filtered = all.filter(o => o.id.toString().includes(searchQuery)).sort((a, b) => b.timestamp - a.timestamp);
+
+        const totalDelivered = all.filter(o => o.status === 'entregado').length;
+        const statEl = document.getElementById('stat-total-orders');
+        if (statEl) statEl.textContent = totalDelivered;
+
+        const perfContainer = document.getElementById('staff-performance-labels');
+        if (perfContainer) {
+            perfContainer.innerHTML = staff.map((r, i) => {
+                const count = all.filter(o => o.repartidor === r).length;
+                const ok = all.filter(o => o.repartidor === r && o.status === 'entregado').length;
+                const color = this.getStaffColor(r, i);
+                return `
+                    <div class="bg-slate-900 border border-slate-800 p-3 rounded-xl min-w-[100px]">
+                        <p class="text-[7px] font-black text-slate-500 uppercase mb-1" style="color:${color}">${r}</p>
+                        <div class="flex items-baseline gap-1"><span class="text-xl font-black text-white">${count}</span><span class="text-[8px] font-black text-emerald-500" style="color:var(--accent-emerald)">${ok} OK</span></div>
+                    </div>`;
+            }).join('');
+        }
+
+        const tbody = document.getElementById('history-table-body');
+        if (tbody) {
+            tbody.innerHTML = filtered.map(o => `
+                <tr>
+                    <td class="px-6 py-3 font-black">#${o.id}</td>
+                    <td class="px-6 py-3 font-bold">${o.repartidor || '-'}</td>
+                    <td class="px-6 py-3 uppercase text-[8px]">${o.repartidor ? o.status : 'EN CASA (LOCAL)'}</td>
+                    <td class="px-6 py-3 text-right">
+                        ${!isOperativo ? `<button class="delete-history-btn text-slate-700 hover:text-red-500 transition" data-id="${o.id}"><i class="fas fa-trash"></i></button>` : ''}
+                    </td>
+                </tr>
+             `).join('');
+
+            tbody.querySelectorAll('.delete-history-btn').forEach(btn => {
+                btn.onclick = () => confirm(`¿Eliminar #${btn.dataset.id}?`) && handlers.onDeleteOrder(btn.dataset.id);
+            });
+        }
+    },
+
+    // --- UTILS & HELPERS ---
+    initSliderGrid(handlers) {
+        const track = document.getElementById('slider-track');
+        if (!track) return;
+        track.innerHTML = '';
+        const ticketsPerSlide = 20;
+        for (let p = 0; p < 5; p++) {
+            const grid = document.createElement('div');
+            grid.className = 'grid grid-cols-10 grid-rows-2 gap-3 min-w-full p-1 h-full content-start';
+            for (let i = 1; i <= ticketsPerSlide; i++) {
+                const n = p * ticketsPerSlide + i;
+                const b = document.createElement('button');
+                b.className = 'num-btn shadow-sm';
+                b.textContent = n;
+                b.draggable = true;
+
+                b.ondragstart = (e) => {
+                    const existingOrder = window.AppState.data.orders[n];
+                    if (existingOrder && existingOrder.status === 'entregado') {
+                        e.preventDefault();
+                        return;
+                    }
+                    e.dataTransfer.setData('id', n);
+                    e.dataTransfer.effectAllowed = 'move';
+                };
+
+                b.onclick = async () => {
+                    const existingOrder = window.AppState.data.orders[n];
+                    // Solo creamos si el pedido NO existe
+                    if (!existingOrder) {
+                        handlers.onCreateOrder(n);
+                    }
+                };
+
+                b.ondblclick = async (e) => {
+                    e.preventDefault();
+                    const existingOrder = window.AppState.data.orders[n];
+                    if (existingOrder && existingOrder.status === 'entregado') {
+                        if (confirm(`Este pedido (${n}) ya fue entregado, ¿desea seleccionarlo de nuevo? (Se eliminará el registro anterior)`)) {
+                            await handlers.onDeleteOrder(n);
+                            await handlers.onCreateOrder(n);
+                        }
+                    } else {
+                        this.showDriverAssignmentMenu(n, handlers);
+                    }
+                };
+
+                grid.appendChild(b);
+            }
+            track.appendChild(grid);
+        }
+    },
+
+    showDriverAssignmentMenu(id, handlers) {
+        const staff = window.AppState.data.staff;
+        if (staff.length === 0) {
+            alert("No hay repartidores configurados.");
+            return;
+        }
+
+        const menu = document.createElement('div');
+        menu.className = 'fixed inset-0 z-[2000] flex items-center justify-center bg-black/60 backdrop-blur-sm';
+        menu.id = 'quick-assign-menu';
+        
+        const content = document.createElement('div');
+        content.className = 'glass-panel p-6 rounded-3xl shadow-2xl border border-white/10 max-w-xs w-full flex flex-col gap-4 animate-in fade-in zoom-in duration-200';
+        
+        content.innerHTML = `
+            <div class="text-center">
+                <p class="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-1">Asignar Ticket</p>
+                <h3 class="text-3xl font-black text-white font-mono">#${id}</h3>
+            </div>
+            <div class="grid grid-cols-1 gap-2 mt-2">
+                ${staff.map((r, i) => {
+                    const color = this.getStaffColor(r, i);
+                    return `
+                    <button class="driver-opt flex items-center justify-between p-4 rounded-xl font-bold text-sm transition-all text-white" 
+                            data-driver="${r}" 
+                            style="background-color: ${color}; border: 1px solid rgba(255,255,255,0.1);">
+                        <span>${r}</span>
+                        <i class="fas fa-chevron-right text-[10px] opacity-70"></i>
+                    </button>
+                    `;
+                }).join('')}
+            </div>
+            <button id="cancel-quick-assign" class="mt-2 p-3 text-xs font-black text-slate-500 uppercase hover:text-white transition-colors">Cancelar</button>
+        `;
+
+        menu.appendChild(content);
+        document.body.appendChild(menu);
+
+        content.querySelectorAll('.driver-opt').forEach(btn => {
+            btn.onclick = async () => {
+                const driver = btn.getAttribute('data-driver');
+                const orders = window.AppState.data.orders;
+                if (!orders[id]) {
+                    await handlers.onCreateOrder(id, driver);
+                } else {
+                    await handlers.onAssignOrder(id, driver);
+                }
+                menu.remove();
+            };
+        });
+
+        document.getElementById('cancel-quick-assign').onclick = () => menu.remove();
+        menu.onclick = (e) => { if (e.target === menu) menu.remove(); };
+    },
+
+    showIncidentResponseMenu(id, handlers, repartidor) {
+        const modal = document.getElementById('incidentResponseModal');
+        if (!modal) return;
+
+        document.getElementById('resp-modal-ticket-id').textContent = `#${id}`;
+        modal.style.display = 'flex';
+
+        const options = modal.querySelectorAll('.incident-resp-opt');
+        options.forEach(btn => {
+            btn.onclick = () => {
+                const text = btn.getAttribute('data-text');
+                handlers.onRespondIncident(id, text);
+                modal.style.display = 'none';
+            };
+        });
+
+        document.getElementById('close-resp-modal').onclick = () => modal.style.display = 'none';
+        modal.onclick = (e) => { if (e.target === modal) modal.style.display = 'none'; };
+    },
+
+    slideNumbers(d, state) {
+        currentSlide = Math.max(0, Math.min(4, currentSlide + d));
+        this.renderApp(state, null); // RenderApp handles slide position
+    },
+
+    setSearchQuery(query) {
+        searchQuery = query;
+    },
+
+    getStaffColor(name, idx) {
+        if (!name) return COLORS[Math.abs(idx || 0) % COLORS.length].bg;
+        const key = name.toLowerCase();
+        for (const k in STAFF_COLOR_MAP) { if (key.includes(k)) return STAFF_COLOR_MAP[k]; }
+        let h = 0; for (let i = 0; i < key.length; i++) { h = ((h << 5) - h) + key.charCodeAt(i); h |= 0; }
+        return COLORS[Math.abs(h) % COLORS.length].bg;
+    },
+
+    hexToRgba(hex, alpha) {
+        hex = hex.replace('#', '');
+        const r = parseInt(hex.substring(0, 2), 16), g = parseInt(hex.substring(2, 4), 16), b = parseInt(hex.substring(4, 6), 16);
+        return `rgba(${r},${g},${b},${alpha})`;
+    },
+
+    setupDropZone(dz, repName, handlers) {
+        dz.ondragover = (e) => e.preventDefault();
+        dz.ondragenter = (e) => { e.preventDefault(); dz.classList.add('drop-zone-active'); };
+        dz.ondragleave = (e) => { if (!dz.contains(e.relatedTarget)) dz.classList.remove('drop-zone-active'); };
+        dz.ondrop = async (e) => { 
+            dz.classList.remove('drop-zone-active'); 
+            const id = e.dataTransfer.getData('id');
+            const orders = window.AppState.data.orders;
+            if (!orders[id]) {
+                await handlers.onCreateOrder(id, repName);
+            } else {
+                await handlers.onAssignOrder(id, repName);
+            }
+        };
+    },
+
+    playSound(f) {
+        if (!synth) synth = new Tone.PolySynth(Tone.Synth).toDestination();
+        if (Tone.context.state !== 'running') Tone.start();
+        synth.triggerAttackRelease(f, "8n");
+    },
+
+    playNewIncidentSound() {
+        if (!synth) synth = new Tone.PolySynth(Tone.Synth).toDestination();
+        if (Tone.context.state !== 'running') Tone.start();
+        synth.triggerAttackRelease(["C5", "E5", "G5"], "4n");
+    },
+
+    playRepeatingAlertSound() {
+        if (!synth) synth = new Tone.PolySynth(Tone.Synth).toDestination();
+        if (Tone.context.state !== 'running') Tone.start();
+        synth.triggerAttackRelease("A4", "2n");
+    },
+
+    manageAlertInterval(hasUnresolved) {
+        if (hasUnresolved && !alertIntervalId) {
+            alertIntervalId = setInterval(() => {
+                this.playRepeatingAlertSound();
+            }, 10000);
+        } else if (!hasUnresolved && alertIntervalId) {
+            clearInterval(alertIntervalId);
+            alertIntervalId = null;
+        }
+    },
+
+    handleTouchStart(e, card, id) {
+        const touch = e.touches[0];
+        touchDraggedId = id;
+        const ghost = document.getElementById('drag-ghost');
+        ghost.innerHTML = card.innerHTML;
+        ghost.style.display = 'block';
+        ghost.style.left = `${touch.clientX - 90}px`;
+        ghost.style.top = `${touch.clientY - 40}px`;
+        card.style.opacity = "0.4";
+    },
+
+    handleTouchMove(e) {
+        if (!touchDraggedId) return;
+        e.preventDefault();
+        const touch = e.touches[0];
+        const ghost = document.getElementById('drag-ghost');
+        ghost.style.left = `${touch.clientX - 90}px`;
+        ghost.style.top = `${touch.clientY - 40}px`;
+
+        const el = document.elementFromPoint(touch.clientX, touch.clientY);
+        const col = el?.closest('.kanban-col');
+        document.querySelectorAll('.kanban-col').forEach(c => c.classList.remove('drop-zone-active'));
+        if (col) col.classList.add('drop-zone-active');
+    },
+
+    handleTouchEnd(e, card, id, handlers) {
+        if (!touchDraggedId) return;
+        const touch = e.changedTouches[0];
+        const el = document.elementFromPoint(touch.clientX, touch.clientY);
+        const col = el?.closest('.kanban-col');
+        if (col) {
+            const newRep = col.getAttribute('data-repartidor') || null;
+            handlers.onAssignOrder(touchDraggedId, newRep);
+        }
+        document.getElementById('drag-ghost').style.display = 'none';
+        card.style.opacity = "1";
+        document.querySelectorAll('.kanban-col').forEach(c => c.classList.remove('drop-zone-active'));
+        touchDraggedId = null;
+    },
+
+    renderStaffListModal(staff, onUpdateStaff, role) {
+        const isOperativo = role === 'operativo';
+        const list = document.getElementById('staff-list');
+        list.innerHTML = staff.map((n, i) => `
+            <div class="flex justify-between items-center p-3 bg-slate-900 rounded-xl border border-slate-800">
+                <span class="font-black text-slate-300 text-[10px] uppercase">${n}</span>
+                ${!isOperativo ? `<button class="remove-staff text-red-500/50 hover:text-red-500" data-idx="${i}"><i class="fas fa-times-circle"></i></button>` : ''}
+            </div>
+         `).join('');
+
+        list.querySelectorAll('.remove-staff').forEach(b => b.onclick = () => {
+            const nl = [...staff];
+            nl.splice(b.dataset.idx, 1);
+            onUpdateStaff(nl);
+            document.getElementById('open-staff-modal-btn').click();
+        });
+    },
+
+    generatePDFReport(orders, staff) {
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF();
+        const allOrders = Object.values(orders);
+        const currentStaff = staff;
+
+        const BRAND_COLOR = [0, 163, 130];
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(22);
+        doc.setTextColor(BRAND_COLOR[0], BRAND_COLOR[1], BRAND_COLOR[2]);
+        doc.text("RUTATOTAL 360", 15, 20);
+        
+        doc.setFontSize(14);
+        doc.setTextColor(100);
+        doc.text("CENTRO DE CONTROL LOGÍSTICO - REPORTE DE OPERACIONES", 15, 28);
+        
+        doc.setFontSize(10);
+        doc.setTextColor(150);
+        doc.text(`Generado el: ${new Date().toLocaleString()}`, 15, 35);
+        doc.setDrawColor(BRAND_COLOR[0], BRAND_COLOR[1], BRAND_COLOR[2]);
+        doc.line(15, 38, 195, 38);
+
+        doc.setFontSize(12);
+        doc.setTextColor(40);
+        doc.text("RESUMEN GENERAL DE TICKETS", 15, 48);
+        
+        doc.autoTable({
+            startY: 52,
+            head: [['ID', 'OPERADOR', 'ESTADO', 'HORA']],
+            body: allOrders.map(o => [`#${o.id}`, o.repartidor || 'SIN ASIGNAR', (o.status || '').toUpperCase(), o.time]),
+            headStyles: { fillColor: BRAND_COLOR, fontSize: 10 },
+            styles: { fontSize: 9, font: "helvetica" },
+            alternateRowStyles: { fillColor: [245, 247, 250] }
+        });
+
+        let currentY = doc.lastAutoTable.finalY + 20;
+
+        doc.setFontSize(14);
+        doc.setTextColor(BRAND_COLOR[0], BRAND_COLOR[1], BRAND_COLOR[2]);
+        doc.text("DESGLOSE POR REPARTIDOR", 15, currentY);
+        currentY += 8;
+
+        currentStaff.forEach((repartidor, idx) => {
+            const staffOrders = allOrders.filter(o => o.repartidor === repartidor);
+            if (staffOrders.length > 0) {
+                if (currentY > 240) { doc.addPage(); currentY = 20; }
+                
+                doc.setFontSize(11);
+                doc.setTextColor(60);
+                doc.text(`OPERADOR: ${repartidor.toUpperCase()}`, 15, currentY);
+                
+                doc.autoTable({
+                    startY: currentY + 3,
+                    head: [['TICKET', 'ESTADO', 'ENTREGA']],
+                    body: staffOrders.map(o => [`#${o.id}`, (o.status || '').toUpperCase(), o.time]),
+                    headStyles: { fillColor: [99, 102, 241], fontSize: 9 },
+                    styles: { fontSize: 8 },
+                    margin: { left: 20 }
+                });
+                currentY = doc.lastAutoTable.finalY + 15;
+            }
+        });
+
+        if (currentY > 180) { doc.addPage(); currentY = 20; }
+        
+        doc.setFontSize(14);
+        doc.setTextColor(BRAND_COLOR[0], BRAND_COLOR[1], BRAND_COLOR[2]);
+        doc.text("ESTADÍSTICAS DE DISTRIBUCIÓN", 15, currentY);
+        currentY += 10;
+
+        const stats = currentStaff.map(r => ({
+            name: r,
+            count: allOrders.filter(o => o.repartidor === r).length
+        })).filter(s => s.count > 0);
+        
+        const total = stats.reduce((acc, s) => acc + s.count, 0);
+        
+        if (total > 0) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 500;
+            canvas.height = 500;
+            const ctx = canvas.getContext('2d');
+            const centerX = 250;
+            const centerY = 250;
+            const radius = 200;
+            let startAngle = 0;
+
+            const palette = ['#6366f1', '#8b5cf6', '#3b82f6', '#f59e0b', '#ec4899', '#06b6d4'];
+
+            stats.forEach((s, i) => {
+                const sliceAngle = (s.count / total) * 2 * Math.PI;
+                ctx.beginPath();
+                ctx.moveTo(centerX, centerY);
+                ctx.arc(centerX, centerY, radius, startAngle, startAngle + sliceAngle);
+                ctx.closePath();
+                ctx.fillStyle = palette[i % palette.length];
+                ctx.fill();
+                
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 4;
+                ctx.stroke();
+
+                const colorHex = palette[i % palette.length];
+                const r = parseInt(colorHex.slice(1,3), 16);
+                const g = parseInt(colorHex.slice(3,5), 16);
+                const b = parseInt(colorHex.slice(5,7), 16);
+                
+                doc.setFillColor(r, g, b);
+                doc.rect(120, currentY + (i * 10), 5, 5, 'F');
+                doc.setTextColor(60);
+                doc.setFontSize(9);
+                doc.text(`${s.name}: ${s.count} pedidos (${Math.round((s.count/total)*100)}%)`, 130, currentY + 4 + (i * 10));
+
+                startAngle += sliceAngle;
+            });
+
+            const imgData = canvas.toDataURL('image/png');
+            doc.addImage(imgData, 'PNG', 15, currentY - 5, 90, 90);
+            
+            doc.setFontSize(10);
+            doc.setTextColor(150);
+            doc.text(`Total de pedidos analizados: ${total}`, 15, currentY + 95);
+        } else {
+            doc.setFontSize(10);
+            doc.setTextColor(150);
+            doc.text("No hay pedidos asignados para generar estadísticas.", 15, currentY + 5);
+        }
+
+        doc.save(`Reporte_Logistico_RutaTotal360_${new Date().toISOString().split('T')[0]}.pdf`);
+    },
+
+    renderArchiveModal(months, onMonthSelect) {
+        const selector = document.getElementById('archive-month-selector');
+        if (!selector) return;
+
+        selector.innerHTML = months.map(m => {
+            const [year, month] = m.split('_');
+            const date = new Date(year, parseInt(month) - 1);
+            const label = date.toLocaleString('es-ES', { month: 'long', year: 'numeric' });
+            return `
+                <button class="month-opt flex-1 min-w-[140px] p-4 bg-white/5 border border-white/5 rounded-2xl text-xs font-black text-slate-400 uppercase tracking-tighter hover:bg-amber-500/10 hover:text-amber-500 hover:border-amber-500/20 transition-all active:scale-95" data-month="${m}">
+                    ${label}
+                </button>
+            `;
+        }).join('');
+
+        selector.querySelectorAll('.month-opt').forEach(btn => {
+            btn.onclick = () => {
+                const month = btn.dataset.month;
+                onMonthSelect(month);
+            };
+        });
+    },
+
+    renderArchiveSessionSelector(sessions, onSessionSelect) {
+        const selector = document.getElementById('archive-session-selector');
+        const list = document.getElementById('archive-session-list');
+        const monthSelector = document.getElementById('archive-month-selector');
+        const empty = document.getElementById('archive-empty-state');
+        const dataView = document.getElementById('archive-data-view');
+        
+        if (!selector || !list || !monthSelector || !empty) return;
+
+        monthSelector.classList.add('hidden');
+        empty.classList.add('hidden');
+        dataView.classList.add('hidden');
+        selector.classList.remove('hidden');
+
+        if (sessions.length === 0) {
+            list.innerHTML = `
+                <div class="flex flex-col items-center py-10 opacity-40">
+                    <i class="fas fa-history text-3xl mb-3"></i>
+                    <p class="text-[10px] text-slate-500 font-black uppercase tracking-widest">Sin registros en este mes</p>
+                </div>`;
+            return;
+        }
+
+        list.innerHTML = sessions.map(s => {
+            const date = s.timestamp ? new Date(s.timestamp.seconds * 1000) : new Date();
+            const timeLabel = date.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+            const dayLabel = date.toLocaleDateString('es-ES', { day: '2-digit', month: 'short' });
+            const isIndividual = s.id.startsWith('Individual');
+            const icon = isIndividual ? 'fa-trash-alt' : 'fa-broom';
+            const color = isIndividual ? 'text-red-400' : 'text-violet-400';
+            const bgHover = isIndividual ? 'hover:bg-red-500/10 hover:border-red-500/20' : 'hover:bg-violet-500/10 hover:border-violet-500/20';
+            const typeLabel = isIndividual ? 'BORRADO MANUAL' : 'LIMPIEZA GENERAL';
+
+            return `
+                <button class="session-opt p-4 bg-slate-900/50 border border-white/5 rounded-2xl flex flex-col gap-1 items-start min-w-[140px] transition-all active:scale-95 ${bgHover}" data-id="${s.id}">
+                    <div class="flex justify-between w-full items-center mb-1">
+                        <span class="text-[8px] text-slate-500 font-black uppercase">${dayLabel}</span>
+                        <i class="fas ${icon} text-[10px] ${color}"></i>
+                    </div>
+                    <span class="text-xl font-black text-white font-mono">${timeLabel}</span>
+                    <span class="text-[8px] ${color} font-black uppercase tracking-tighter">${typeLabel}</span>
+                    <span class="text-[9px] text-slate-400 font-bold">${s.count} ${s.count === 1 ? 'pedido' : 'pedidos'}</span>
+                </button>
+            `;
+        }).join('');
+
+        list.querySelectorAll('.session-opt').forEach(btn => {
+            btn.onclick = () => {
+                list.querySelectorAll('.session-opt').forEach(b => b.classList.remove('bg-amber-500/20', 'border-amber-500/40'));
+                btn.classList.add('bg-amber-500/20', 'border-amber-500/40');
+                onSessionSelect(btn.dataset.id);
+            };
+        });
+
+        document.getElementById('back-to-months').onclick = () => {
+            selector.classList.add('hidden');
+            monthSelector.classList.remove('hidden');
+            empty.classList.remove('hidden');
+            dataView.classList.add('hidden');
+        };
+    },
+
+    renderArchivedOrders(orders) {
+        const tbody = document.getElementById('archive-table-body');
+        const view = document.getElementById('archive-data-view');
+        const empty = document.getElementById('archive-empty-state');
+        
+        if (!tbody || !view || !empty) return;
+
+        empty.classList.add('hidden');
+        view.classList.remove('hidden');
+
+        const orderList = Object.values(orders).sort((a, b) => a.id - b.id);
+
+        tbody.innerHTML = orderList.map(o => {
+            return `
+                <tr class="hover:bg-white/[0.01] transition-colors group">
+                    <td class="px-6 py-4 font-black text-white font-mono">#${o.id}</td>
+                    <td class="px-6 py-4 font-bold text-slate-300 uppercase text-[10px] group-hover:text-amber-400 transition-colors">${o.repartidor || 'SIN ASIGNAR'}</td>
+                    <td class="px-6 py-4">
+                        <span class="px-2 py-1 bg-slate-800 rounded text-[9px] font-black text-slate-500 uppercase">${o.status}</span>
+                    </td>
+                    <td class="px-6 py-4 text-slate-400 font-mono text-[10px]">${o.time}</td>
+                    <td class="px-6 py-4 text-right pr-6">
+                         <i class="fas fa-check-circle text-emerald-500/40 text-[10px]"></i>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+};
